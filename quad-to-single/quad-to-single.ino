@@ -50,7 +50,7 @@
 #define CPU_CLOCK_PER_US  16U
 
 /* The output pulse length in micro-seconds. */
-#define PULSE_LEN_US      75U
+#define PULSE_LEN_US      50U
 
 /* The number of clock counts that sets the output pulse width. */
 #define PULSE_LEN_CPU_CLOCKS    (PULSE_LEN_US * CPU_CLOCK_PER_US)
@@ -65,6 +65,50 @@ static void QuadChange();
 
 /* The bit rate at which the Arduino serial port runs */
 #define SERIAL_BIT_RATE 115200
+
+/* The number of possible state changes, this is just the 16 values a 4 bit
+   nibble can take. */
+#define NUM_POSSIBLE_QUAD_STATE_CHANGES     16U
+
+/* Masks to pick out the old and new states of the quadrature input pins */
+#define MSK_PREV_STATE  0x03U
+#define MSK_NEW_STATE   0x0CU
+
+/* Number of bits to right shft the new bits to the previous bits. */
+#define RIGHT_SHIFT_NEW_TO_PREV 2
+
+
+static uint8_t QuadStatePrevious = 0U;
+static uint8_t QuadState = 0U; 
+static int8_t NewMovement = 0;
+static int8_t PrevMovement = 0;
+
+/* The port on which the qadraute inputs are received. */
+#define QUAD_PORT PIND
+
+
+    /* The look-up table for the movement associated with a change in state of
+       the quadrature inputs. */
+static const int8_t QuadLookup[NUM_POSSIBLE_QUAD_STATE_CHANGES] =
+{
+/* Aprev    Bprev   Acurr   Bcurr   Nibble(hex)     Position change */
+/*  0       0       0       0       0   */          0,
+/*  0       0       0       1       1   */          -1,
+/*  0       0       1       0       2   */          1,
+/*  0       0       1       1       3   */          0,
+/*  0       1       0       0       4   */          1,
+/*  0       1       0       1       5   */          0,
+/*  0       1       1       0       6   */          0,
+/*  0       1       1       1       7   */          -1,
+/*  1       0       0       0       8   */          -1,
+/*  1       0       0       1       9   */          0,
+/*  1       0       1       0       A   */          0,
+/*  1       0       1       1       B   */          1,
+/*  1       1       0       0       C   */          0,
+/*  1       1       0       1       D   */          1,
+/*  1       1       1       0       E   */          -1,
+/*  1       1       1       1       F   */          0,
+};
 
 /* The function called by the Arduino framework to initialise the system */
 void setup() 
@@ -81,6 +125,11 @@ void setup()
   /* Set=up quadrature monitoring */
   pinMode(DI_QUAD_B, INPUT_PULLUP);
   pinMode(DI_QUAD_A, INPUT_PULLUP);
+
+  /* Set up the previous quad state for the first interrupt */
+  QuadState = QUAD_PORT & MSK_NEW_STATE;
+  QuadStatePrevious = QuadState >> RIGHT_SHIFT_NEW_TO_PREV;
+
   attachInterrupt(0, QuadChange, CHANGE);
   attachInterrupt(1, QuadChange, CHANGE);
 
@@ -93,9 +142,7 @@ void setup()
   TCCR1B = 0;
   TCCR1B = _BV(CS10);    // prescaler of 1 
 
-   Serial.print("* ");
-  // Serial.print("PULSE_LEN_TIMER_VAL ");
-  // Serial.println(PULSE_LEN_TIMER_VAL);
+   Serial.println("quad to single v1.0");
 
 }
 
@@ -104,22 +151,33 @@ void loop()
 {
 }
 
-
 /* ISR for change in state of either quadrature input */
 void QuadChange()
 {
-  digitalToggleFast(PULSE_OUT);
+  QuadState = (QUAD_PORT & MSK_NEW_STATE) | QuadStatePrevious;
 
-  /* Clear the timer 1 overflow flag to prevent an immmediate overflow
-     ISR running when the interrupt is enabled. */
-  TIFR1 |= _BV(TOV1);
+  NewMovement = QuadLookup[QuadState];
 
-  /* Set the timer to expire a pulse width period from now. */
-  /* The ATMega 328 requires that the high register is loaded first. */
-  TCNT1 = PULSE_LEN_TIMER_VAL;
+  if (NewMovement == PrevMovement)
+  {
+    digitalToggleFast(PULSE_OUT);
 
-  /* Trigger the timer - enable the overflow interrupt */
-  TIMSK1 |= _BV(TOIE1);
+    /* Clear the timer 1 overflow flag to prevent an immmediate overflow
+      ISR running when the interrupt is enabled. */
+    TIFR1 |= _BV(TOV1);
+
+    /* Set the timer to expire a pulse width period from now. */
+    /* The ATMega 328 requires that the high register is loaded first. */
+    TCNT1 = PULSE_LEN_TIMER_VAL;
+
+    /* Trigger the timer - enable the overflow interrupt */
+    TIMSK1 |= _BV(TOIE1);  
+  }
+
+  PrevMovement = NewMovement;
+
+  QuadStatePrevious = QuadState >> RIGHT_SHIFT_NEW_TO_PREV;
+
 }
 
 
